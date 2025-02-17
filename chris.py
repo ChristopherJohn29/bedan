@@ -10,13 +10,26 @@ STATION_1 = 2
 STATION_2 = 3
 STATION_3 = 4
 
-# Set GPIO direction (IN / OUT)
-GPIO.setup(STATION_1, GPIO.IN)
-GPIO.setup(STATION_2, GPIO.IN)
-GPIO.setup(STATION_3, GPIO.IN)
+# Set GPIO direction (IN / OUT) with pull-up resistors
+GPIO.setup(STATION_1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(STATION_2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(STATION_3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# Global variables for debouncing
+last_event_time = 0
+debounce_delay = 0.5  # 500 ms
 
 # Callback function for station detection
 def station_callback(channel):
+    global last_event_time
+    current_time = time.time()
+
+    # Ignore events that occur too quickly (debouncing)
+    if current_time - last_event_time < debounce_delay:
+        return
+
+    last_event_time = current_time
+
     if GPIO.input(channel) == GPIO.LOW:
         # Train is arriving (falling edge)
         if channel == STATION_1:
