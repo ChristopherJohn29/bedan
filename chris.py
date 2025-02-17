@@ -69,6 +69,10 @@ if __name__ == '__main__':
                     print("Train is maneuvering")
                 else:
                     print("Train is moving " + direction)
+            
+
+            print("Current Position " + currentstation)
+            print("Prev Position " + currentstation)
 
             time.sleep(0.5)
 
