@@ -58,22 +58,16 @@ GPIO.setup(STATION_3, GPIO.IN)
 
 def gpio_polling():
     """
-    Continuously poll GPIO pins to detect station changes, update:
-      - current_station
-      - direction
-      - current_speed (based on timestamps & distance)
-      - current_state (maneuvering logic)
+    Continuously poll GPIO pins to detect station changes or repeated detections,
+    then call handle_station_event(detected_station).
+    Note: We do NOT filter out repeated 'detected_station == prev_station' 
+          so we can finalize a maneuver if the sensor never untriggers.
     """
-    global current_station, direction, last_update_time, current_speed
-    global current_state, maneuver_start_time
-
-    prev_station = None
-
     try:
         while True:
             detected_station = None
 
-            # Read the pins (assuming 0 means "station triggered")
+            # Read pins (0 means "station triggered")
             if GPIO.input(STATION_1) == 0:
                 detected_station = 1
             elif GPIO.input(STATION_2) == 0:
@@ -81,88 +75,9 @@ def gpio_polling():
             elif GPIO.input(STATION_3) == 0:
                 detected_station = 3
 
-            # If a new station is detected (different from the last loop)
-            if detected_station is not None and detected_station != prev_station:
-                arrival_time = datetime.now()
-                last_update_time = arrival_time
-
-                # -------------------------------------------
-                # STATE MACHINE LOGIC
-                # -------------------------------------------
-                if current_state == RUNNING:
-                    # Normal direction assignment
-                    if prev_station is not None:
-                        if prev_station < detected_station:
-                            direction = "FORWARD"
-                        else:
-                            direction = "BACKWARD"
-
-                    current_station = detected_station
-
-                    # Calculate speed if we know the distance from prev_station->detected_station
-                    if prev_station is not None:
-                        update_speed(prev_station, detected_station, arrival_time)
-
-                    # Check if we triggered a maneuver:
-                    # 1) Arrive at station 1 from station 2 going BACKWARD
-                    if (detected_station == 1
-                        and prev_station == 2
-                        and direction == "BACKWARD"):
-                        current_state = MANEUVERING_1
-                        maneuver_start_time = arrival_time
-                        print("[GPIO] *** Starting Maneuver at Station 1 ***")
-
-                    # 2) Arrive at station 3 from station 2 going FORWARD
-                    elif (detected_station == 3
-                          and prev_station == 2
-                          and direction == "FORWARD"):
-                        current_state = MANEUVERING_3
-                        maneuver_start_time = arrival_time
-                        print("[GPIO] *** Starting Maneuver at Station 3 ***")
-
-                    # Record the timestamp
-                    station_timestamps[detected_station] = arrival_time
-                    prev_station = detected_station
-
-                elif current_state == MANEUVERING_1:
-                    # We are waiting for the train to leave station 1 and then come back
-                    # Means: first the train might go "no station", then once it returns
-                    # to station 1, we finalize the maneuver
-                    if detected_station == 1 and prev_station is None:
-                        # The train returned to station 1
-                        current_state = MANEUVERING_DONE
-                        print("[GPIO] *** Maneuver at Station 1 Complete! ***")
-
-                    current_station = detected_station
-                    # Possibly update speed if we want to measure movement in the yard
-                    # but usually the yard track isn't an official 'station'
-                    prev_station = detected_station
-
-                elif current_state == MANEUVERING_3:
-                    # Similar logic for station 3
-                    if detected_station == 3 and prev_station is None:
-                        current_state = MANEUVERING_DONE
-                        print("[GPIO] *** Maneuver at Station 3 Complete! ***")
-
-                    current_station = detected_station
-                    prev_station = detected_station
-
-                elif current_state == MANEUVERING_DONE:
-                    # We finalize direction after the maneuver
-                    if current_station == 1:
-                        direction = "FORWARD"
-                    elif current_station == 3:
-                        direction = "BACKWARD"
-
-                    current_state = RUNNING
-                    print(f"[GPIO] *** Exiting Maneuver: now RUNNING, direction={direction} ***")
-
-                    # Update speed if needed
-                    if prev_station is not None:
-                        update_speed(prev_station, detected_station, arrival_time)
-
-                    station_timestamps[detected_station] = arrival_time
-                    prev_station = detected_station
+            # If we detect a station, handle the event (even if it's the same as last time)
+            if detected_station is not None:
+                handle_station_event(detected_station)
 
             time.sleep(0.2)
 
@@ -171,15 +86,95 @@ def gpio_polling():
     finally:
         GPIO.cleanup()
 
+def handle_station_event(detected_station):
+    """
+    Core state-machine logic. We allow repeated detection of the same station 
+    (i.e., we do NOT require station change to call update_speed or finalize maneuvers).
+    """
+    global current_station, current_state, direction, last_update_time, current_speed
+    global maneuver_start_time
+    global station_timestamps
+
+    arrival_time = datetime.now()
+    last_update_time = arrival_time
+
+    # We'll reference a "prev_station" for speed updates or direction changes
+    # But it won't prevent us from handling repeated station triggers.
+    prev_stn = current_station
+
+    # -------------------------------------------
+    # STATE MACHINE
+    # -------------------------------------------
+    if current_state == RUNNING:
+        # Update direction/speed ONLY if station actually changed
+        if prev_stn is not None and prev_stn != detected_station:
+            if prev_stn < detected_station:
+                direction = "FORWARD"
+            else:
+                direction = "BACKWARD"
+            update_speed(prev_stn, detected_station, arrival_time)
+
+        current_station = detected_station
+
+        # Check if we triggered a maneuver:
+        # 1) Arrive at station 1 from station 2, going BACKWARD
+        if (detected_station == 1 and prev_stn == 2 and direction == "BACKWARD"):
+            current_state = MANEUVERING_1
+            maneuver_start_time = arrival_time
+            print("[GPIO] *** Starting Maneuver at Station 1 ***")
+
+        # 2) Arrive at station 3 from station 2, going FORWARD
+        elif (detected_station == 3 and prev_stn == 2 and direction == "FORWARD"):
+            current_state = MANEUVERING_3
+            maneuver_start_time = arrival_time
+            print("[GPIO] *** Starting Maneuver at Station 3 ***")
+
+    elif current_state == MANEUVERING_3:
+        # We'll consider the maneuver DONE the *next* time we see Station 3, 
+        # provided we "left" it at least once. We'll do that check:
+        # if detected_station == 3 and prev_stn != 3 => finalize
+        if detected_station == 3 and prev_stn != 3:
+            current_state = MANEUVERING_DONE
+            print("[GPIO] *** Maneuver at Station 3 Complete! ***")
+
+        current_station = detected_station
+
+    elif current_state == MANEUVERING_1:
+        # Similarly, for station 1
+        if detected_station == 1 and prev_stn != 1:
+            current_state = MANEUVERING_DONE
+            print("[GPIO] *** Maneuver at Station 1 Complete! ***")
+
+        current_station = detected_station
+
+    elif current_state == MANEUVERING_DONE:
+        # Once we get here, we finalize direction
+        if current_station == 1:
+            direction = "FORWARD"
+        elif current_station == 3:
+            direction = "BACKWARD"
+
+        current_state = RUNNING
+        print(f"[GPIO] *** Exiting Maneuver: now RUNNING, direction={direction} ***")
+
+        # If station truly changed, update speed
+        if prev_stn is not None and prev_stn != detected_station:
+            update_speed(prev_stn, detected_station, arrival_time)
+
+        current_station = detected_station
+
+    # Always update timestamp
+    station_timestamps[detected_station] = arrival_time
+
+
 def update_speed(prev_stn, curr_stn, arrival_time):
     """
-    Compute the train's speed_km_h based on time difference between
-    prev_stn -> curr_stn.
+    Compute train's speed_km_h based on time difference between stations.
+    Only called if station actually changed (prev_stn != curr_stn).
     """
     global current_speed
 
     distance_km = None
-    # If route is 1->2 or 2->1
     if (prev_stn, curr_stn) in [(1,2), (2,1)]:
         distance_km = DISTANCE_12
     elif (prev_stn, curr_stn) in [(2,3), (3,2)]:
@@ -208,7 +203,7 @@ def update_speed(prev_stn, curr_stn, arrival_time):
 def get_current_status():
     """
     Return current station, direction, state, last_update_time, and speed_km_h
-    as JSON for the front-end to consume.
+    as JSON for the front-end.
     """
     update_str = None
     if last_update_time:
@@ -222,10 +217,11 @@ def get_current_status():
         "speed_km_h": current_speed
     })
 
-# Optional: Serve index.html if you want to serve the front-end from here
+# If you want to serve index.html from the same dir:
 @app.route("/")
 def index_page():
     return send_from_directory(".", "index.html")
+
 
 if __name__ == "__main__":
     gpio_thread = threading.Thread(target=gpio_polling, daemon=True)

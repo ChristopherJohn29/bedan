@@ -54,112 +54,80 @@
 <script>
 /*
   This version calculates ETA based on:
-    - Summing the distances (in kilometers) for each segment
+    - Summing the distances (in kilometers) for each route segment
     - Dividing by the train’s current speed (km/h) from /currentStatus
     - Subtracting the time elapsed since last update
 
-  If the train is MANEUVERING, we display "Train is maneuvering. ETA unavailable."
+  If the train is MANEUVERING_1 or MANEUVERING_3, it displays "Train is maneuvering. ETA unavailable."
 */
 
-// 1) Distances between stations (km). Adjust as needed.
 const distances = {
   "1->2": 1.0,
-  "2->3": 1.0,
-  // We also define reverse directions explicitly:
   "2->1": 1.0,
+  "2->3": 1.0,
   "3->2": 1.0
 };
 
-// 2) Default speed if the train’s reported speed is 0 or null
 const DEFAULT_SPEED_KMH = 20.0;
 
-// We'll fetch the status every second
+// Poll status every second
 setInterval(fetchTrainStatus, 1000);
 
 function fetchTrainStatus() {
   $.getJSON("/currentStatus", function(data) {
-    // Display the basic info
+    // Update displayed info
     $("#currentStation").text(data.current_station ?? "N/A");
     $("#direction").text(data.direction ?? "N/A");
     $("#trainState").text(data.state ?? "N/A");
     $("#lastUpdate").text(data.last_update_time ?? "N/A");
 
-    // If "speed_km_h" is present, display it, else N/A
-    if (data.speed_km_h !== undefined && data.speed_km_h !== null) {
+    if (data.speed_km_h != null) {
       $("#speed").text(data.speed_km_h.toFixed(2));
     } else {
       $("#speed").text("N/A");
     }
 
-    // Calculate ETA based on the new data
-    const etaString = calculateETA(data);
-    $("#eta").text(etaString);
+    // Compute ETA
+    const etaStr = calculateETA(data);
+    $("#eta").text(etaStr);
   });
 }
 
 function calculateETA(trainData) {
-  // 1) If the train is maneuvering, skip
   const state = trainData.state;
   if (state === "MANEUVERING_1" || state === "MANEUVERING_3") {
     return "Train is maneuvering. ETA unavailable.";
   }
 
-  // Possibly handle "MANEUVERING_DONE" or other states, if needed
-  if (state !== "RUNNING" && state !== undefined && state !== null) {
-    // e.g., "IDLE" or "DELAYED" or anything else
-    // For now, we'll just do the normal calculation if it's not explicitly maneuvering
-  }
-
-  // 2) Get user-chosen origin & destination
   const origin = $("#originSelect").val();
   const destination = $("#destSelect").val();
   if (!origin || !destination) return "Select origin & destination.";
   if (origin === destination) return "Origin = Destination";
 
-  // 3) Extract the train's current station, speed, last update
   const cStation = trainData.current_station;
-  let speed = trainData.speed_km_h; // in km/h
-  if (!speed || speed <= 0) {
-    speed = DEFAULT_SPEED_KMH; 
-  }
+  let speed = trainData.speed_km_h;
+  if (!speed || speed <= 0) speed = DEFAULT_SPEED_KMH;
 
   const lastUpdateStr = trainData.last_update_time;
-  if (!cStation || !lastUpdateStr) {
-    return "No current station data";
-  }
+  if (!cStation || !lastUpdateStr) return "No current station data";
 
-  // Time since last update
   const lastUpdate = new Date(lastUpdateStr);
   const now = new Date();
   let elapsedMin = (now - lastUpdate) / (1000 * 60);
   if (elapsedMin < 0) elapsedMin = 0;
 
-  // 4) Build a path: (current station -> origin) + (origin -> destination)
-  //    Then sum the distance. We'll do:
-  //    totalDistanceKM = distanceOf(current->origin) + distanceOf(origin->destination)
-  // In a real application, you might or might not do "current->origin" first. 
-  // Possibly you want "current->destination" if you only care about final station. 
-  // But let's follow the same logic as before.
+  // We'll assume route: current->origin + origin->destination
+  const distToOrigin = computeRouteDistance(cStation, origin);
+  const distOriginToDest = computeRouteDistance(origin, destination);
+  const totalDistance = distToOrigin + distOriginToDest;
 
-  let distToOrigin = computeRouteDistance(cStation, origin);
-  let distOriginToDest = computeRouteDistance(origin, destination);
-
-  let totalDistance = distToOrigin + distOriginToDest;
-
-  // 5) Time (in hours) = totalDistance / speed
-  let totalTimeHours = totalDistance / speed;
-  // Convert to minutes
-  let totalTimeMin = totalTimeHours * 60;
-
-  // 6) Subtract elapsed time 
+  // time in hours = distance / speed
+  let totalTimeMin = (totalDistance / speed) * 60;
   let remaining = totalTimeMin - elapsedMin;
   if (remaining < 0) remaining = 0;
 
-  if (remaining <= 1) {
-    return "Arrived!";
-  }
+  if (remaining <= 1) return "Arrived!";
 
-  // 7) Convert remaining minutes back to hr/min/sec
   const hrs = Math.floor(remaining / 60);
   const mins = Math.floor(remaining % 60);
   const secs = Math.floor((remaining - hrs * 60 - mins) * 60);
@@ -167,44 +135,29 @@ function calculateETA(trainData) {
   return `${hrs} hr ${mins} min ${secs} sec`;
 }
 
-// Returns the total distance (in km) traveling from station A to station B
-// by stepping station-by-station. For a simple 3-station system: 1->2->3->2->1...
 function computeRouteDistance(stA, stB) {
-  // If same station, distance = 0
-  if (parseInt(stA) === parseInt(stB)) return 0;
-
-  // Build a path array in numeric order, e.g. 1->2->3 or 3->2->1
-  const path = getPathBetweenStations(parseInt(stA), parseInt(stB));
-
+  if (+stA === +stB) return 0;
+  const path = getPathBetweenStations(+stA, +stB);
   let distanceSum = 0;
-  for (let i = 0; i < path.length - 1; i++) {
-    const s1 = path[i];
-    const s2 = path[i+1];
+  for (let i=0; i<path.length-1; i++) {
+    const s1 = path[i], s2 = path[i+1];
     const key = `${s1}->${s2}`;
-    if (distances[key] !== undefined) {
+    if (distances[key] != null) {
       distanceSum += distances[key];
-    } else {
-      // If not found, you might have to handle skipping or an error
-      // For a 3-station route, we assume we always find it
     }
   }
   return distanceSum;
 }
 
-// Build an array of station IDs from 'a' to 'b' 
-// e.g. getPathBetweenStations(1,3) -> [1,2,3]
-function getPathBetweenStations(a, b) {
-  let path = [];
+// For a simple 1->2->3 route, build forward [1,2,3] or backward [3,2,1]
+function getPathBetweenStations(a,b) {
+  let route = [];
   if (a < b) {
-    for (let s = a; s <= b; s++) {
-      path.push(s);
-    }
+    for (let s=a; s<=b; s++) route.push(s);
   } else {
-    for (let s = a; s >= b; s--) {
-      path.push(s);
-    }
+    for (let s=a; s>=b; s--) route.push(s);
   }
-  return path;
+  return route;
 }
 </script>
 </body>
