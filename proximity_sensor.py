@@ -2,105 +2,148 @@
 
 import RPi.GPIO as GPIO
 import time
-import mysql.connector
+import threading
 from datetime import datetime
+from flask import Flask, jsonify
 
-# GPIO Mode (BOARD / BCM)
-GPIO.setmode(GPIO.BCM)
+app = Flask(__name__)
 
-# Set GPIO Pins
+# GPIO pins
 STATION_1 = 2
 STATION_2 = 3
 STATION_3 = 4
 
-# Set GPIO direction (IN / OUT)
+# Shared variables
+current_station = None
+direction = "FORWARD"
+last_update_time = None
+
+# State machine states
+RUNNING = "RUNNING"
+MANEUVERING_1 = "MANEUVERING_1"  # Maneuver at Station 1
+MANEUVERING_3 = "MANEUVERING_3"  # Maneuver at Station 3
+MANEUVERING_DONE = "MANEUVERING_DONE"
+
+current_state = RUNNING
+maneuver_start_time = None
+
+GPIO.setmode(GPIO.BCM)
 GPIO.setup(STATION_1, GPIO.IN)
 GPIO.setup(STATION_2, GPIO.IN)
 GPIO.setup(STATION_3, GPIO.IN)
 
-def update_train_status(current_station, direction):
-    """
-    Updates the train_status row in the database with the given station & direction.
-    """
-    try:
-        connection = mysql.connector.connect(
-            host='localhost',   # Adjust if needed
-            user='root',        # Replace with your DB username
-            password='admin',   # Replace with your DB password
-            database='bedan'    # Replace with your DB name
-        )
-        cursor = connection.cursor()
-        
-        query = """
-            UPDATE train_status
-            SET current_station = %s, direction = %s, last_update_time = %s
-            WHERE train_id = 1
-        """
-        cursor.execute(query, (current_station, direction, datetime.now()))
-        connection.commit()
-        cursor.close()
-        connection.close()
-    except Exception as e:
-        print(f"Database error: {e}")
+def gpio_polling():
+    global current_station, direction, last_update_time
+    global current_state, maneuver_start_time
 
-if __name__ == '__main__':
     prev_station = None
     direction = "FORWARD"
-    
+
     try:
         while True:
             detected_station = None
-            
-            # Check GPIO inputs (active-low or active-high depends on your wiring)
-            # Here we assume "0" means "detected"
+
+            # Read station pins (assume 0 = triggered)
             if GPIO.input(STATION_1) == 0:
                 detected_station = 1
             elif GPIO.input(STATION_2) == 0:
                 detected_station = 2
             elif GPIO.input(STATION_3) == 0:
                 detected_station = 3
-            
-            # If a station is detected and it's different from the previous station
+
             if detected_station is not None and detected_station != prev_station:
-                
-                # Determine direction (FORWARD or BACKWARD) based on previous vs. current
-                if prev_station is not None:
-                    if prev_station < detected_station:
-                        direction = "FORWARD"
-                    else:
-                        direction = "BACKWARD"
-                
-                # --- Check for maneuver condition at Station 1 going BACKWARD ---
-                if detected_station == 1 and direction == "BACKWARD":
-                    print("Train arrived at Station 1 moving BACKWARD. Starting maneuver.")
+                arrival_time = datetime.now()
+                last_update_time = arrival_time
+
+                if current_state == RUNNING:
+                    # Normal forward/backward logic
+                    if prev_station is not None:
+                        if prev_station < detected_station:
+                            direction = "FORWARD"
+                        else:
+                            direction = "BACKWARD"
+
+                    current_station = detected_station
+
+                    # Check for maneuver triggers:
+                    # 1) Station 1 from Station 2 going BACKWARD => MANEUVER_1
+                    if (detected_station == 1 
+                        and prev_station == 2 
+                        and direction == "BACKWARD"):
+                        current_state = MANEUVERING_1
+                        maneuver_start_time = arrival_time
+                        print("[GPIO] *** Starting Maneuver at Station 1 ***")
                     
-                    # 1) First, update the DB that we arrived at Station 1, BACKWARD
-                    update_train_status(1, "BACKWARD")
-                    
-                    # 2) Update DB to show that we are "maneuvering"
-                    update_train_status(1, "MANEUVERING")
-                    
-                    # 3) Simulate the maneuver time (5 seconds or 5 minutes, etc.)
-                    time.sleep(5)  # or time.sleep(300) for 5 minutes
-                    
-                    # 4) After maneuver, you may want to switch direction to FORWARD
-                    #    or remain BACKWARD depending on your operation
-                    direction = "FORWARD"
-                    update_train_status(1, direction)
-                    
-                    # Make station=1 the new 'previous station'
-                    prev_station = 1
-                    print("Maneuver at Station 1 complete. Direction now FORWARD.")
-                
-                else:
-                    # Normal case: update DB with the detected station & direction
-                    print(f"Train detected at STATION_{detected_station} moving {direction}")
-                    update_train_status(detected_station, direction)
-                    
+                    # 2) Station 3 from Station 2 going FORWARD => MANEUVER_3
+                    elif (detected_station == 3 
+                          and prev_station == 2
+                          and direction == "FORWARD"):
+                        current_state = MANEUVERING_3
+                        maneuver_start_time = arrival_time
+                        print("[GPIO] *** Starting Maneuver at Station 3 ***")
+
                     prev_station = detected_station
-            
-            time.sleep(0.5)
-    
+
+                elif current_state == MANEUVERING_1:
+                    # We're in the midst of a Station 1 maneuver
+                    # We expect the train to leave station 1 (no station), 
+                    # then come back to station 1
+                    if detected_station == 1 and prev_station is None:
+                        # Train returned to station 1
+                        current_state = MANEUVERING_DONE
+                        print("[GPIO] *** Maneuver at Station 1 Complete! ***")
+
+                    current_station = detected_station
+                    prev_station = detected_station
+
+                elif current_state == MANEUVERING_3:
+                    # Similarly, if we are maneuvering at station 3
+                    if detected_station == 3 and prev_station is None:
+                        # Train returned to station 3
+                        current_state = MANEUVERING_DONE
+                        print("[GPIO] *** Maneuver at Station 3 Complete! ***")
+
+                    current_station = detected_station
+                    prev_station = detected_station
+
+                elif current_state == MANEUVERING_DONE:
+                    # At the end of the maneuver, we set direction 
+                    # (which side we consider 'forward' after reversing is up to you)
+                    if current_station == 1:
+                        direction = "FORWARD"
+                    elif current_station == 3:
+                        direction = "BACKWARD"
+                    
+                    # Return to running
+                    current_state = RUNNING
+                    print(f"[GPIO] *** Exiting Maneuver: direction now {direction} ***")
+
+                    current_station = detected_station
+                    prev_station = detected_station
+
+            time.sleep(0.2)
+
     except KeyboardInterrupt:
-        print("Measurement stopped by User")
+        print("GPIO polling stopped by user.")
+    finally:
         GPIO.cleanup()
+
+@app.route("/currentStatus")
+def get_current_status():
+    """
+    Return station, direction, and state as JSON.
+    """
+    return jsonify({
+        "current_station": current_station,
+        "direction": direction,
+        "state": current_state,
+        "last_update_time": last_update_time.strftime("%Y-%m-%d %H:%M:%S")
+            if last_update_time else None
+    })
+
+if __name__ == "__main__":
+    gpio_thread = threading.Thread(target=gpio_polling, daemon=True)
+    gpio_thread.start()
+
+    print("Starting Flask server on port 5000...")
+    app.run(host="0.0.0.0", port=5000, debug=False)
