@@ -17,62 +17,50 @@ GPIO.setup(STATION_3, GPIO.IN)
 
 if __name__ == '__main__':
 
-    prevstation = 0
-    currentstation = 0
+    prev_station = 0
+    current_station = 0
     direction = 'forward'
 
     try:
         while True:
             # --- Check STATION_1 ---
             if GPIO.input(STATION_1) == 0:
-                currentstation = 1
-                if prevstation == 0:  # First detection
+                current_station = 1
+                if prev_station == 0:  # First detection
                     direction = 'forward'
-                elif prevstation == 1:
-                    direction = 'forward'
-                else:
-                    direction = 'forward'
-                prevstation = 1
+                elif prev_station == 2:
+                    direction = 'backward'
+                prev_station = 1
 
             # --- Check STATION_2 ---
-            if GPIO.input(STATION_2) == 0:
-                currentstation = 2
-                if prevstation == 0:  # First detection
+            elif GPIO.input(STATION_2) == 0:
+                current_station = 2
+                if prev_station == 1:
                     direction = 'forward'
-                elif prevstation == 1:
-                    direction = 'forward'
-                else:
-                    # If coming from station 3 => backward
+                elif prev_station == 3:
                     direction = 'backward'
-                prevstation = 2
+                prev_station = 2
 
             # --- Check STATION_3 ---
-            if GPIO.input(STATION_3) == 0:
-                currentstation = 3
-                if prevstation == 0:  # First detection
+            elif GPIO.input(STATION_3) == 0:
+                current_station = 3
+                if prev_station == 0:  # First detection
                     direction = 'backward'
-                elif prevstation == 3:
-                    direction = 'backward'
-                else:
-                    direction = 'backward'
-                prevstation = 3
+                elif prev_station == 2:
+                    direction = 'forward'
+                prev_station = 3
             
             # --- Check if no stations are triggered ---
-            if (GPIO.input(STATION_1) == 1 
-                and GPIO.input(STATION_2) == 1 
-                and GPIO.input(STATION_3) == 1):
-                
-                # Use currentstation (not current_station)
-                if prevstation == 1 and currentstation == 1:
-                    print("Train is maneuvering")
-                elif prevstation == 3 and currentstation == 3:
-                    print("Train is maneuvering")
+            else:
+                if prev_station == 1 and current_station == 1:
+                    print("Train is maneuvering at Station 1")
+                elif prev_station == 3 and current_station == 3:
+                    print("Train is maneuvering at Station 3")
                 else:
-                    print("Train is moving " + direction)
-            
+                    print(f"Train is moving {direction}")
 
-            print("Current Position " + currentstation)
-            print("Prev Position " + currentstation)
+            print(f"Current Position: {current_station}")
+            print(f"Prev Position: {prev_station}")
 
             time.sleep(0.5)
 
