@@ -1,4 +1,3 @@
-# Libraries
 import RPi.GPIO as GPIO
 import time
 
@@ -10,6 +9,14 @@ STATION_1 = 2
 STATION_2 = 3
 STATION_3 = 4
 
+# Keep track of previous station states so we don't double-trigger
+# None indicates we haven't recorded a state yet.
+station_states = {
+    STATION_1: None,
+    STATION_2: None,
+    STATION_3: None
+}
+
 # Set GPIO direction (IN / OUT)
 GPIO.setup(STATION_1, GPIO.IN)
 GPIO.setup(STATION_2, GPIO.IN)
@@ -17,7 +24,17 @@ GPIO.setup(STATION_3, GPIO.IN)
 
 # Callback function for station detection
 def station_callback(channel):
-    if GPIO.input(channel) == GPIO.LOW:
+    current_state = GPIO.input(channel)
+    previous_state = station_states[channel]
+    
+    # If the state hasn't changed, do nothing (prevents double-trigger)
+    if current_state == previous_state:
+        return
+    
+    # Update the stored state
+    station_states[channel] = current_state
+
+    if current_state == GPIO.LOW:
         # Train is arriving (falling edge)
         if channel == STATION_1:
             print("Train ARRIVED at Station 1")
