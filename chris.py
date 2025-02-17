@@ -15,54 +15,26 @@ GPIO.setup(STATION_1, GPIO.IN)
 GPIO.setup(STATION_2, GPIO.IN)
 GPIO.setup(STATION_3, GPIO.IN)
 
+# Callback function for station detection
+def station_callback(channel):
+    if channel == STATION_1:
+        print("Station 1 detected!")
+    elif channel == STATION_2:
+        print("Station 2 detected!")
+    elif channel == STATION_3:
+        print("Station 3 detected!")
+
+# Add event detection for each station
+GPIO.add_event_detect(STATION_1, GPIO.FALLING, callback=station_callback, bouncetime=300)
+GPIO.add_event_detect(STATION_2, GPIO.FALLING, callback=station_callback, bouncetime=300)
+GPIO.add_event_detect(STATION_3, GPIO.FALLING, callback=station_callback, bouncetime=300)
+
 if __name__ == '__main__':
-
-    prev_station = 0
-    current_station = 0
-    direction = 'forward'
-
     try:
+        print("Waiting for station detection...")
         while True:
-            # --- Check STATION_1 ---
-            if GPIO.input(STATION_1) == 0:
-                current_station = 1
-                if prev_station == 0:  # First detection
-                    direction = 'forward'
-                elif prev_station == 2:
-                    direction = 'backward'
-                prev_station = 1
-
-            # --- Check STATION_2 ---
-            elif GPIO.input(STATION_2) == 0:
-                current_station = 2
-                if prev_station == 1:
-                    direction = 'forward'
-                elif prev_station == 3:
-                    direction = 'backward'
-                prev_station = 2
-
-            # --- Check STATION_3 ---
-            elif GPIO.input(STATION_3) == 0:
-                current_station = 3
-                if prev_station == 0:  # First detection
-                    direction = 'backward'
-                elif prev_station == 2:
-                    direction = 'forward'
-                prev_station = 3
-            
-            # --- Check if no stations are triggered ---
-            else:
-                if prev_station == 1 and current_station == 1:
-                    print("Train is maneuvering at Station 1")
-                elif prev_station == 3 and current_station == 3:
-                    print("Train is maneuvering at Station 3")
-                else:
-                    print(f"Train is moving {direction}")
-
-            print(f"Current Position: {current_station}")
-            print(f"Prev Position: {prev_station}")
-
-            time.sleep(0.5)
+            # Keep the program running to detect events
+            time.sleep(1)
 
     except KeyboardInterrupt:
         print("Measurement stopped by User")
