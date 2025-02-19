@@ -28,9 +28,9 @@ def update_train_status(current_station, direction):
     try:
         connection = mysql.connector.connect(
             host='localhost',  # Change if needed
-            user='root',  # Replace with your DB username
+            user='root',       # Replace with your DB username
             password='admin',  # Replace with your DB password
-            database='bedan'  # Replace with your DB name
+            database='bedan'   # Replace with your DB name
         )
         cursor = connection.cursor()
         
@@ -43,12 +43,33 @@ def update_train_status(current_station, direction):
     except Exception as e:
         print(f"Database error: {e}")
 
+def fetch_current_station():
+    """
+    Fetch the current station value from the database for train_id=1.
+    """
+    try:
+        connection = mysql.connector.connect(
+            host='localhost',
+            user='root',
+            password='admin',
+            database='bedan'
+        )
+        cursor = connection.cursor()
+        query = "SELECT current_station FROM train_status WHERE train_id = 1"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        return result[0] if result is not None else None
+    except Exception as e:
+        print(f"Database error: {e}")
+        return None
+
 # Callback function for station detection
 def station_callback(channel):
     current_state = GPIO.input(channel)
     previous_state = station_states[channel]
 
-    direction = "FORWARD"
     # If the state hasn't changed, do nothing (prevents double-trigger)
     if current_state == previous_state:
         return
@@ -61,14 +82,27 @@ def station_callback(channel):
         if channel == STATION_1:
             print("Train ARRIVED at Station 1")
             detected_station = 1
+            direction = "FORWARD"
             update_train_status(detected_station, direction)
         elif channel == STATION_2:
             print("Train ARRIVED at Station 2")
             detected_station = 2
+            # Fetch the previous station to determine direction.
+            prev_station = fetch_current_station()
+            if prev_station is not None:
+                if prev_station == 1:
+                    direction = "FORWARD"
+                elif prev_station == 3:
+                    direction = "BACKWARD"
+                else:
+                    direction = "FORWARD"
+            else:
+                direction = "FORWARD"
             update_train_status(detected_station, direction)
         elif channel == STATION_3:
             print("Train ARRIVED at Station 3")
             detected_station = 3
+            direction = "BACKWARD"
             update_train_status(detected_station, direction)
     else:
         # Train is leaving (rising edge)
@@ -90,7 +124,6 @@ if __name__ == '__main__':
         while True:
             # Keep the program running to detect events
             time.sleep(1)
-
     except KeyboardInterrupt:
         print("Measurement stopped by User")
         GPIO.cleanup()
