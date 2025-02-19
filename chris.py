@@ -1,5 +1,7 @@
 import RPi.GPIO as GPIO
 import time
+import mysql.connector
+from datetime import datetime
 
 # GPIO Mode (BOARD / BCM)
 GPIO.setmode(GPIO.BCM)
@@ -22,11 +24,31 @@ GPIO.setup(STATION_1, GPIO.IN)
 GPIO.setup(STATION_2, GPIO.IN)
 GPIO.setup(STATION_3, GPIO.IN)
 
+def update_train_status(current_station, direction):
+    try:
+        connection = mysql.connector.connect(
+            host='localhost',  # Change if needed
+            user='root',  # Replace with your DB username
+            password='admin',  # Replace with your DB password
+            database='bedan'  # Replace with your DB name
+        )
+        cursor = connection.cursor()
+        
+        # Update train_status table
+        query = "UPDATE train_status SET current_station = %s, direction = %s, last_update_time = %s WHERE train_id = 1"
+        cursor.execute(query, (current_station, direction, datetime.now()))
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except Exception as e:
+        print(f"Database error: {e}")
+
 # Callback function for station detection
 def station_callback(channel):
     current_state = GPIO.input(channel)
     previous_state = station_states[channel]
-    
+
+    direction = "FORWARD"
     # If the state hasn't changed, do nothing (prevents double-trigger)
     if current_state == previous_state:
         return
@@ -38,10 +60,16 @@ def station_callback(channel):
         # Train is arriving (falling edge)
         if channel == STATION_1:
             print("Train ARRIVED at Station 1")
+            detected_station = 1
+            update_train_status(detected_station, direction)
         elif channel == STATION_2:
             print("Train ARRIVED at Station 2")
+            detected_station = 2
+            update_train_status(detected_station, direction)
         elif channel == STATION_3:
             print("Train ARRIVED at Station 3")
+            detected_station = 3
+            update_train_status(detected_station, direction)
     else:
         # Train is leaving (rising edge)
         if channel == STATION_1:
